@@ -20,6 +20,7 @@ class BrokerConfig:
     strict: bool = _bool("CUDABROKER_STRICT", False)
     fits_concurrent: bool = _bool("CUDABROKER_FITS_CONCURRENT", True)
     sample_interval: float = float(os.getenv("CUDABROKER_SAMPLE_INTERVAL", "1.5"))
+    gpu_sampler: str = os.getenv("CUDABROKER_GPU_SAMPLER", "auto").strip().lower()
     lease_timeout: float = float(os.getenv("CUDABROKER_LEASE_TIMEOUT", "20"))
     default_ttl_seconds: float = float(os.getenv("CUDABROKER_DEFAULT_TTL_SECONDS", "600"))
     stats_limit: int = int(os.getenv("CUDABROKER_STATS_LIMIT", "200"))

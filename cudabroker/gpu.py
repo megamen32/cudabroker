@@ -3,11 +3,12 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
-import time
 
 from .store import BrokerStore
 
 log = logging.getLogger(__name__)
+
+VALID_SAMPLERS = {"auto", "torch", "nvidia-smi", "nvidia_smi", "smi", "none"}
 
 
 def _read_torch_cuda_mem_mb() -> tuple[float, float] | None:
@@ -49,16 +50,29 @@ def _read_nvidia_smi_mem_mb() -> tuple[float, float] | None:
     return None
 
 
-def read_cuda_mem_mb() -> tuple[float, float]:
-    # Prefer torch because it reflects CUDA_VISIBLE_DEVICES for the broker process.
-    # Fallback to nvidia-smi so the broker works without installing torch into its venv.
+def read_cuda_mem_mb(sampler: str = "auto") -> tuple[float, float]:
+    sampler = (sampler or "auto").strip().lower()
+    if sampler not in VALID_SAMPLERS:
+        log.warning("Unknown CUDABROKER_GPU_SAMPLER=%r, falling back to auto", sampler)
+        sampler = "auto"
+
+    if sampler == "none":
+        return 0.0, 0.0
+    if sampler == "torch":
+        return _read_torch_cuda_mem_mb() or (0.0, 0.0)
+    if sampler in {"nvidia-smi", "nvidia_smi", "smi"}:
+        return _read_nvidia_smi_mem_mb() or (0.0, 0.0)
+
+    # auto: prefer torch when it is installed in the broker process and CUDA is visible,
+    # then fall back to nvidia-smi. This lets cudabroker run without torch.
     return _read_torch_cuda_mem_mb() or _read_nvidia_smi_mem_mb() or (0.0, 0.0)
 
 
 class GpuSampler:
-    def __init__(self, store: BrokerStore, interval: float = 1.5):
+    def __init__(self, store: BrokerStore, interval: float = 1.5, sampler: str = "auto"):
         self.store = store
         self.interval = interval
+        self.sampler = sampler
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="cudabroker-gpu-sampler", daemon=True)
 
@@ -71,6 +85,6 @@ class GpuSampler:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            total, free = read_cuda_mem_mb()
+            total, free = read_cuda_mem_mb(self.sampler)
             self.store.set_gpu(total, free)
             self._stop.wait(self.interval)

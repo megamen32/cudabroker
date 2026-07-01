@@ -19,7 +19,7 @@ log = logging.getLogger("cudabroker")
 config = get_config()
 store = BrokerStore(stats_limit=config.stats_limit)
 policy = Policy(store, config)
-sampler = GpuSampler(store, config.sample_interval)
+sampler = GpuSampler(store, config.sample_interval, config.gpu_sampler)
 
 
 class RegisterRequest(BaseModel):

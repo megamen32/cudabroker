@@ -109,9 +109,26 @@ Models in inference_active, loading, or unloading are not eviction candidates.
 
 ## GPU memory estimation
 
-The broker combines declared model footprint from the client and live GPU memory sampling from torch or nvidia-smi.
+The broker combines declared model footprint from the client and live GPU memory sampling.
 
-Client-side PyTorch memory deltas are useful but not always enough. Native CUDA libraries may not be fully visible through torch.cuda.memory_allocated(). For those, prefer explicit vram_mb values and tune them from real observations.
+Sampler mode is controlled by:
+
+```bash
+CUDABROKER_GPU_SAMPLER=auto
+```
+
+Modes:
+
+```text
+auto        try torch first, then nvidia-smi
+torch       use torch.cuda.mem_get_info only
+nvidia-smi  use nvidia-smi only
+none        disable live GPU sampling
+```
+
+Torch is useful when the broker itself runs with the same CUDA visibility as the workers, because it respects the CUDA runtime view. It is not required and it is not universal: non-PyTorch workers, CTranslate2, llama.cpp, TensorRT, custom CUDA, and other native runtimes may not expose useful per-model memory through torch.
+
+nvidia-smi is more universal on NVIDIA hosts and works even when the broker venv has no torch. It sees device-level memory, not exact model ownership. For native CUDA libraries, prefer explicit vram_mb values and tune them from real observations.
 
 ## Failure modes
 

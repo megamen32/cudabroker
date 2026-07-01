@@ -50,6 +50,10 @@ model.touch(active=True)
 segments, info = whisper.transcribe(path)
 ```
 
+## GPU sampler
+
+`CUDABROKER_GPU_SAMPLER=auto` tries torch first and falls back to `nvidia-smi`. Use `nvidia-smi` when the broker venv has no torch or when your workers are not PyTorch-based.
+
 ## Docs
 
 See docs/architecture.md and docs/whisper-example.md.
