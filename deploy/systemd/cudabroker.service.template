@@ -1,0 +1,22 @@
+[Unit]
+Description=cudabroker GPU lease broker
+After=network.target
+
+[Service]
+Type=simple
+User={{USER}}
+WorkingDirectory={{WORKDIR}}
+Environment=CUDABROKER_HOST=127.0.0.1
+Environment=CUDABROKER_PORT=7777
+Environment=CUDABROKER_HEADROOM_MB=512
+Environment=CUDABROKER_STAT_MODE=p98
+Environment=CUDABROKER_STRICT=0
+Environment=CUDABROKER_SAMPLE_INTERVAL=1.5
+Environment=CUDABROKER_LEASE_TIMEOUT=20
+Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/lib/x86_64-linux-gnu
+ExecStart={{PYTHON}} -m cudabroker.server
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

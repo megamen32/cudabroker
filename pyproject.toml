@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cudabroker"
+version = "0.1.0"
+description = "Local GPU/CUDA lease broker for coordinating VRAM-heavy Python services"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "pydantic>=2",
+  "httpx>=0.26",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-asyncio>=0.23"]
+server = ["torch"]
+
+[project.scripts]
+cudabroker = "cudabroker.server:main"
+
+[tool.setuptools.packages.find]
+include = ["cudabroker*", "cudabroker_client*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
