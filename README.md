@@ -54,6 +54,3 @@ segments, info = whisper.transcribe(path)
 
 See docs/architecture.md and docs/whisper-example.md.
 
-## License
-
-MIT
