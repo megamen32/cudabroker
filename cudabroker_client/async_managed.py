@@ -46,6 +46,12 @@ class AsyncManagedModel(Generic[T]):
         self._lock = asyncio.Lock()
         self._active_until = 0.0
 
+    async def __aenter__(self) -> T:
+        return await self.acquire()
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.release()
+
     async def acquire(self) -> T:
         async with self._lock:
             if self.model is not None and self.current_device == "cuda":

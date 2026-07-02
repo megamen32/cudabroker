@@ -54,3 +54,17 @@ async def test_async_managed_model_evict_to_cpu(monkeypatch):
     assert await mm.touch() == "evicted"
     assert mm.model == "cpu"
     assert mm.current_device == "cpu"
+
+@pytest.mark.asyncio
+async def test_async_managed_model_context_manager_releases(monkeypatch):
+    async def fake_post(self, path, payload):
+        return TransportResponse(False, {}, True)
+
+    monkeypatch.setattr("cudabroker_client.transport.AsyncBrokerTransport.post", fake_post)
+    monkeypatch.delenv("CUDABROKER_REQUIRED", raising=False)
+
+    mm = AsyncManagedModel("m", loader=lambda: "gpu")
+    async with mm as model:
+        assert model == "gpu"
+        assert mm.current_device == "cuda"
+    assert mm.current_device == "unloaded"

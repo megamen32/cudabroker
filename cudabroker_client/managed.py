@@ -36,6 +36,12 @@ class ManagedModel(Generic[T]):
         self._lock = threading.RLock()
         self._active_until = 0.0
 
+    def __enter__(self) -> T:
+        return self.acquire()
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.release()
+
     def acquire(self) -> T:
         with self._lock:
             if self.model is not None and self.current_device == "cuda":

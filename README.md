@@ -95,15 +95,12 @@ whisper_model = ManagedModel(
     client_id="whisper",
 )
 
-model = whisper_model.acquire()
-try:
+with whisper_model as model:
     whisper_model.touch(active=True)
     segments, info = model.transcribe("audio.mp3")
     for segment in segments:
         whisper_model.touch(active=True)
         print(segment.text)
-finally:
-    whisper_model.release()
 ```
 
 For small models that can survive on CPU:
@@ -138,12 +135,9 @@ async_model = AsyncManagedModel(
     client_id="vision-api",
 )
 
-model = await async_model.acquire()
-try:
+async with async_model as model:
     await async_model.touch(active=True)
     result = await run_inference(model, image)
-finally:
-    await async_model.release()
 ```
 
 Lower-level async lease:

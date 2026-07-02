@@ -42,3 +42,16 @@ def test_managed_model_evict_to_cpu(monkeypatch):
     assert mm.touch() == "evicted"
     assert mm.model == "cpu"
     assert mm.current_device == "cpu"
+
+def test_managed_model_context_manager_releases(monkeypatch):
+    def fake_post(self, path, payload):
+        return TransportResponse(False, {}, True)
+
+    monkeypatch.setattr("cudabroker_client.transport.BrokerTransport.post", fake_post)
+    monkeypatch.delenv("CUDABROKER_REQUIRED", raising=False)
+
+    mm = ManagedModel("m", loader=lambda: "gpu")
+    with mm as model:
+        assert model == "gpu"
+        assert mm.current_device == "cuda"
+    assert mm.current_device == "unloaded"
