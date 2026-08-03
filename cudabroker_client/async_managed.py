@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import logging
 import time
@@ -245,6 +246,9 @@ class AsyncManagedModel(Generic[T]):
 
     @staticmethod
     def _empty_cuda_cache() -> None:
+        # Native CUDA runtimes may free VRAM only when their model object's
+        # finalizer runs.  Collect before clearing PyTorch's allocator cache.
+        gc.collect()
         try:
             import torch  # type: ignore
             if torch.cuda.is_available():

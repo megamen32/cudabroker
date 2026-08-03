@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import logging
 import threading
 import time
@@ -185,6 +186,10 @@ class ManagedModel(Generic[T]):
 
     @staticmethod
     def _empty_cuda_cache() -> None:
+        # Native CUDA runtimes such as CTranslate2 release their allocations
+        # from object finalizers rather than PyTorch's allocator.  Run GC
+        # before acknowledging eviction, then clear any PyTorch-owned cache.
+        gc.collect()
         try:
             import torch  # type: ignore
             if torch.cuda.is_available():

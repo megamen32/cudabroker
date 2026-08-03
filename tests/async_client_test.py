@@ -1,8 +1,28 @@
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from cudabroker_client import AsyncManagedModel, gpu_lease_async
 from cudabroker_client.lease import AsyncLeaseHandle
 from cudabroker_client.transport import TransportResponse
+
+
+def test_async_empty_cuda_cache_collects_native_models_before_torch_cache(monkeypatch):
+    events = []
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: True,
+            empty_cache=lambda: events.append("torch-empty"),
+            ipc_collect=lambda: events.append("torch-ipc"),
+        )
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr("cudabroker_client.async_managed.gc.collect", lambda: events.append("gc"))
+
+    AsyncManagedModel._empty_cuda_cache()
+
+    assert events == ["gc", "torch-empty", "torch-ipc"]
 
 
 @pytest.mark.asyncio
