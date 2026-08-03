@@ -1,6 +1,7 @@
 import pytest
 
 from cudabroker_client import AsyncManagedModel, gpu_lease_async
+from cudabroker_client.lease import AsyncLeaseHandle
 from cudabroker_client.transport import TransportResponse
 
 
@@ -49,6 +50,24 @@ async def test_async_managed_model_gpu_only_fails_closed_when_broker_down(monkey
     mm = AsyncManagedModel("m", loader=lambda: "gpu")
     with pytest.raises(RuntimeError, match="GPU load refused"):
         await mm.acquire()
+
+
+@pytest.mark.asyncio
+async def test_async_granted_lease_recovers_after_temporary_broker_unavailability():
+    class Transport:
+        def __init__(self):
+            self.calls = 0
+
+        async def post(self, path, payload):
+            self.calls += 1
+            if self.calls == 1:
+                return TransportResponse(False, {}, True)
+            return TransportResponse(True, {"status": "active"}, False)
+
+    handle = AsyncLeaseHandle("l1", Transport())
+    assert await handle.touch(active=False) == "unavailable"
+    assert handle.local_mode is False
+    assert await handle.touch(active=False) == "active"
 
 
 @pytest.mark.asyncio

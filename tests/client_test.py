@@ -1,6 +1,7 @@
 import pytest
 
 from cudabroker_client.managed import ManagedModel
+from cudabroker_client.lease import LeaseHandle
 from cudabroker_client.transport import TransportResponse
 
 
@@ -42,6 +43,23 @@ def test_required_mode_fails_when_broker_down(monkeypatch):
     mm = ManagedModel("m", loader=lambda: "gpu")
     with pytest.raises(RuntimeError):
         mm.acquire()
+
+
+def test_granted_lease_recovers_after_temporary_broker_unavailability():
+    class Transport:
+        def __init__(self):
+            self.calls = 0
+
+        def post(self, path, payload):
+            self.calls += 1
+            if self.calls == 1:
+                return TransportResponse(False, {}, True)
+            return TransportResponse(True, {"status": "active"}, False)
+
+    handle = LeaseHandle("l1", Transport())
+    assert handle.touch(active=False) == "unavailable"
+    assert handle.local_mode is False
+    assert handle.touch(active=False) == "active"
 
 
 def test_managed_model_evict_to_cpu(monkeypatch):
