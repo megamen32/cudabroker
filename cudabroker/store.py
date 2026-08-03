@@ -87,9 +87,19 @@ class BrokerStore:
         ttl_seconds: float = 600,
     ) -> ModelInfo:
         with self.lock:
-            if model_id not in self.models:
-                self.register(ModelInfo(model_id, client_id, declared_vram_mb, gpu_priority, cpu_capable, ttl_seconds))
-            return self.models[model_id]
+            # Persisted registry data is a restart baseline, not immutable
+            # configuration.  Each acquire refreshes live policy metadata so
+            # updated priority/fallback/TTL settings take effect immediately.
+            return self.register(
+                ModelInfo(
+                    model_id,
+                    client_id,
+                    declared_vram_mb,
+                    gpu_priority,
+                    cpu_capable,
+                    ttl_seconds,
+                )
+            )
 
     def find_request_lease(
         self,

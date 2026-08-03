@@ -18,6 +18,32 @@ def test_footprint_modes():
     assert s.footprint("m", "p98") >= 40
 
 
+def test_ensure_model_refreshes_persisted_runtime_metadata():
+    store = BrokerStore()
+    store.register(
+        ModelInfo(
+            "whisper-large-v3",
+            "whisper",
+            declared_vram_mb=5200,
+            gpu_priority=8,
+            cpu_capable=False,
+            ttl_seconds=900,
+        )
+    )
+
+    refreshed = store.ensure_model(
+        "whisper-large-v3",
+        "whisper",
+        declared_vram_mb=None,
+        gpu_priority=8,
+        cpu_capable=False,
+        ttl_seconds=86400,
+    )
+
+    assert refreshed.declared_vram_mb == 5200
+    assert refreshed.ttl_seconds == 86400
+
+
 def test_state_round_trip_preserves_live_leases_models_and_samples(tmp_path):
     path = tmp_path / "state.json"
     source = BrokerStore(stats_limit=5)
