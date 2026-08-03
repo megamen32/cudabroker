@@ -14,7 +14,7 @@ The broker is intentionally simple:
 
 - no Redis;
 - no external database;
-- in-memory leases;
+- in-memory leases with optional atomic restart persistence;
 - optional systemd deployment;
 - designed for localhost or trusted LAN use.
 
@@ -73,7 +73,11 @@ cpu
 released
 ```
 
-The broker evicts only idle loaded models. It does not evict a model while it is loading or actively running inference.
+The broker evicts only idle loaded models with a strictly lower `gpu_priority`
+than the requester. It does not evict a model while it is loading or actively
+running inference. The queue is ordered by priority descending and creation time
+ascending; promotion retries safe eviction after a lower-priority inference
+becomes idle.
 
 ## Admission policy
 

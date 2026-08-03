@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from statistics import mean
 from threading import RLock
 from typing import Deque, Literal
@@ -188,10 +191,82 @@ class BrokerStore:
             lease.last_heartbeat = time.time()
             return True
 
-    def cleanup_dead(self, lease_timeout: float) -> None:
+    def cleanup_dead(self, lease_timeout: float) -> bool:
         now = time.time()
+        changed = False
         with self.lock:
             for lease in self.leases.values():
                 if lease.status in {"active", "queued", "evicting"} and now - lease.last_heartbeat > lease_timeout:
                     lease.status = "dead"
                     lease.state = "released"
+                    changed = True
+        return changed
+
+    def save(self, path: str | os.PathLike[str]) -> bool:
+        """Atomically persist broker-owned coordination state.
+
+        GPU snapshots are intentionally excluded because the sampler refreshes them
+        after startup. Terminal leases are omitted so the state file stays bounded.
+        """
+        target = Path(path)
+        with self.lock:
+            payload = {
+                "version": 1,
+                "models": {key: asdict(value) for key, value in self.models.items()},
+                "leases": {
+                    key: asdict(value)
+                    for key, value in self.leases.items()
+                    if value.status not in TERMINAL_STATUSES
+                },
+                "stats": {key: list(values) for key, values in self.stats.items()},
+            }
+            encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(encoded)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, target)
+            finally:
+                try:
+                    temporary.unlink()
+                except FileNotFoundError:
+                    pass
+        return True
+
+    def load(self, path: str | os.PathLike[str]) -> bool:
+        """Restore a complete valid snapshot, leaving current state intact on error."""
+        target = Path(path)
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+            if payload.get("version") != 1:
+                return False
+            models = {
+                key: ModelInfo(**value)
+                for key, value in dict(payload.get("models", {})).items()
+            }
+            leases = {
+                key: Lease(**value)
+                for key, value in dict(payload.get("leases", {})).items()
+            }
+            stats = {
+                key: deque((float(item) for item in values), maxlen=self.stats_limit)
+                for key, values in dict(payload.get("stats", {})).items()
+            }
+        except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
+            return False
+
+        with self.lock:
+            self.models = models
+            self.leases = {
+                key: value
+                for key, value in leases.items()
+                if value.status not in TERMINAL_STATUSES
+            }
+            self.stats = stats
+            for model_id in models:
+                self.stats.setdefault(model_id, deque(maxlen=self.stats_limit))
+        return True

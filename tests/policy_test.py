@@ -60,6 +60,85 @@ def test_release_after_evict_allows_promotion():
     assert s.leases[r.lease.lease_id].status == "active"
 
 
+def test_lower_priority_request_cannot_evict_higher_priority_idle_model():
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=5000)
+    s.register(ModelInfo("whisper", "asr", declared_vram_mb=4500, gpu_priority=8, cpu_capable=True))
+    s.register(ModelInfo("embedding", "memory", declared_vram_mb=4000, gpu_priority=0, cpu_capable=True))
+
+    assert p.acquire("whisper", "asr").status == "granted"
+    whisper = s.active_leases()[0]
+    whisper.state = "loaded_idle"
+
+    result = p.acquire("embedding", "memory")
+
+    assert result.status == "queued"
+    assert result.evicted == []
+    assert whisper.status == "active"
+
+
+def test_queued_high_priority_request_evicts_low_priority_once_inference_is_idle():
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=5000)
+    s.register(ModelInfo("embedding", "memory", declared_vram_mb=4500, gpu_priority=0, cpu_capable=True))
+    s.register(ModelInfo("whisper", "asr", declared_vram_mb=4000, gpu_priority=8, cpu_capable=False))
+
+    assert p.acquire("embedding", "memory").status == "granted"
+    embedding = s.active_leases()[0]
+    embedding.state = "inference_active"
+    queued = p.acquire("whisper", "asr")
+    assert queued.status == "queued"
+    assert embedding.status == "active"
+
+    embedding.state = "loaded_idle"
+    p.try_promote_queue()
+
+    assert embedding.status == "evicting"
+    assert queued.lease.status == "queued"
+    s.release(embedding.lease_id)
+    p.try_promote_queue()
+    assert queued.lease.status == "active"
+
+
+def test_queue_promotes_highest_priority_before_fifo_order():
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=5000)
+    s.register(ModelInfo("blocker", "c", declared_vram_mb=4500, gpu_priority=9))
+    s.register(ModelInfo("low", "c", declared_vram_mb=3000, gpu_priority=0))
+    s.register(ModelInfo("high", "c", declared_vram_mb=3000, gpu_priority=8))
+
+    blocker = p.acquire("blocker", "c").lease
+    low = p.acquire("low", "c").lease
+    high = p.acquire("high", "c").lease
+    assert low.status == "queued"
+    assert high.status == "queued"
+
+    s.release(blocker.lease_id)
+    p.try_promote_queue()
+
+    assert high.status == "active"
+    assert low.status == "queued"
+
+
+def test_eviction_marks_only_the_minimum_lower_priority_footprint_needed():
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=2000)
+    s.register(ModelInfo("low-a", "c", declared_vram_mb=1500, gpu_priority=0, cpu_capable=True))
+    s.register(ModelInfo("low-b", "c", declared_vram_mb=1500, gpu_priority=0, cpu_capable=True))
+    s.register(ModelInfo("high", "c", declared_vram_mb=2500, gpu_priority=8))
+
+    first = s.new_lease("low-a", "c", "active")
+    second = s.new_lease("low-b", "c", "active")
+    first.state = "loaded_idle"
+    second.state = "loaded_idle"
+
+    result = p.acquire("high", "c")
+
+    assert result.status == "queued"
+    assert len(result.evicted) == 1
+    assert sum(lease.status == "evicting" for lease in (first, second)) == 1
+
+
 def test_ttl_evict_only_idle():
     s, p = mk()
     s.register(ModelInfo("a", "c", declared_vram_mb=1000, cpu_capable=True, ttl_seconds=0.01))
@@ -81,8 +160,10 @@ def test_acquire_idempotent_for_same_request_id():
     s.register(ModelInfo("b", "c", declared_vram_mb=1000))
     assert p.acquire("a", "c").status == "granted"
     r1 = p.acquire("b", "c", worker_id="w1", request_id="r1")
+    r1.lease.last_heartbeat = time.time() - 100
     r2 = p.acquire("b", "c", worker_id="w1", request_id="r1")
     assert r1.status == "queued"
     assert r2.status == "queued"
     assert r1.lease.lease_id == r2.lease.lease_id
+    assert r2.lease.last_heartbeat > time.time() - 1
     assert len(s.queued_leases()) == 1

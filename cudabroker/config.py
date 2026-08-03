@@ -24,6 +24,7 @@ class BrokerConfig:
     lease_timeout: float = float(os.getenv("CUDABROKER_LEASE_TIMEOUT", "20"))
     default_ttl_seconds: float = float(os.getenv("CUDABROKER_DEFAULT_TTL_SECONDS", "600"))
     stats_limit: int = int(os.getenv("CUDABROKER_STATS_LIMIT", "200"))
+    state_path: str | None = os.getenv("CUDABROKER_STATE_PATH", "").strip() or None
 
 
 def get_config() -> BrokerConfig:

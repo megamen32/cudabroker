@@ -8,7 +8,7 @@ This is useful when one machine runs several independent GPU projects: Whisper/A
 
 ## What it gives you
 
-- Local FastAPI broker with in-memory state.
+- Local FastAPI broker with optional atomic state persistence across restarts.
 - Concurrent GPU leases when VRAM fits.
 - Optional strict mode: one GPU lease at a time.
 - Idle TTL and heartbeat timeout cleanup.
@@ -16,7 +16,8 @@ This is useful when one machine runs several independent GPU projects: Whisper/A
 - Idempotent acquire via `worker_id` + `request_id`, so retries do not duplicate queue entries.
 - Sync client API: `gpu_lease`, `ManagedModel`.
 - Async client API: `gpu_lease_async`, `AsyncManagedModel`.
-- Local fallback mode when broker is unavailable, or required mode when you prefer fail-fast.
+- Safe managed fallback: CPU-capable models use CPU when the broker is unavailable; GPU-only managed models fail closed.
+- Priority-first queueing and strictly-lower-priority eviction.
 - GPU memory sampling with `torch`, `nvidia-smi`, or disabled sampling.
 
 ## Mental model
@@ -95,11 +96,10 @@ whisper_model = ManagedModel(
     client_id="whisper",
 )
 
-with whisper_model as model:
-    whisper_model.touch(active=True)
+whisper_model.acquire()
+with whisper_model.inference() as model:
     segments, info = model.transcribe("audio.mp3")
     for segment in segments:
-        whisper_model.touch(active=True)
         print(segment.text)
 ```
 
@@ -135,8 +135,8 @@ async_model = AsyncManagedModel(
     client_id="vision-api",
 )
 
-async with async_model as model:
-    await async_model.touch(active=True)
+await async_model.acquire()
+async with async_model.inference() as model:
     result = await run_inference(model, image)
 ```
 
@@ -178,7 +178,7 @@ Client-side variables:
 | `CUDABROKER_TIMEOUT` | `5` | HTTP timeout |
 | `CUDABROKER_HEARTBEAT_INTERVAL` | `5` | client heartbeat interval |
 | `CUDABROKER_ACTIVE_GRACE_SECONDS` | `30` | how long `touch(active=True)` keeps the model protected from idle eviction |
-| `CUDABROKER_REQUIRED` | `0` | `1` means fail if broker is unavailable; `0` means local fallback |
+| `CUDABROKER_REQUIRED` | `0` | lower-level lease API fail-fast switch; managed models still refuse unmanaged GPU loads |
 
 Common server-side variables:
 
@@ -191,6 +191,7 @@ Common server-side variables:
 | `CUDABROKER_STAT_MODE` | `p98` | footprint statistic mode |
 | `CUDABROKER_LEASE_TIMEOUT` | `30` | heartbeat timeout before a lease is dead |
 | `CUDABROKER_GPU_SAMPLER` | `auto` | `auto`, `torch`, `nvidia-smi`, or `none` |
+| `CUDABROKER_STATE_PATH` | empty | atomic JSON state file used to retain live leases across broker restarts |
 
 ## GPU sampler
 
@@ -200,13 +201,15 @@ Use `nvidia-smi` when the broker venv has no torch or when workers are not PyTor
 
 ## Failure behavior
 
-By default clients use local fallback:
+The lower-level lease context uses local mode by default:
 
 ```bash
 CUDABROKER_REQUIRED=0
 ```
 
-That keeps services alive if the broker is down, but it also disables coordination and can bring back OOM risk.
+`ManagedModel` and `AsyncManagedModel` do not load CUDA in that mode. A configured
+`cpu_fallback` is loaded instead; a GPU-only model raises an error. This prevents a
+broker outage from silently restoring the original OOM race.
 
 For production jobs where coordination is mandatory:
 
@@ -235,5 +238,5 @@ More detail: [docs/architecture.md](docs/architecture.md). Whisper integration e
 - Not a scheduler for inference requests.
 - Not a model server.
 - Not a security boundary.
-- Not persistent: leases are in memory and reset when the broker restarts.
+- Persistence is optional; without `CUDABROKER_STATE_PATH`, leases reset on restart and managed clients safely unload on a lost lease.
 - Not a perfect VRAM oracle. You should still provide realistic `vram_mb` values and tune them from real measurements.

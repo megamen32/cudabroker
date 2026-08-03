@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cudabroker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local GPU/CUDA lease broker for coordinating VRAM-heavy Python services"
 requires-python = ">=3.10"
 dependencies = [

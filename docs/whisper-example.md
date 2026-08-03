@@ -16,13 +16,11 @@ mm = ManagedModel(
     client_id="whisper",
 )
 
-model = mm.acquire()
-mm.touch(active=True)
-segments, info = model.transcribe("audio.mp3")
-
-for segment in segments:
-    mm.touch(active=True)
-    print(segment.text)
+mm.acquire()
+with mm.inference() as model:
+    segments, info = model.transcribe("audio.mp3")
+    for segment in segments:
+        print(segment.text)
 ```
 
 For tiny/base/small you can add CPU fallback:

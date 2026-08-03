@@ -18,8 +18,18 @@ from .store import BrokerStore, LeaseState, ModelInfo
 log = logging.getLogger("cudabroker")
 config = get_config()
 store = BrokerStore(stats_limit=config.stats_limit)
+state_loaded = bool(config.state_path and store.load(config.state_path))
 policy = Policy(store, config)
 sampler = GpuSampler(store, config.sample_interval, config.gpu_sampler)
+
+
+def persist_state() -> None:
+    if not config.state_path:
+        return
+    try:
+        store.save(config.state_path)
+    except OSError as exc:
+        log.error("failed to persist broker state: %s", exc)
 
 
 class RegisterRequest(BaseModel):
@@ -40,7 +50,7 @@ class AcquireRequest(RegisterRequest):
 class AcquireResponse(BaseModel):
     lease_id: str
     status: Literal["granted", "queued"]
-    evicted: list[str] = []
+    evicted: list[str] = Field(default_factory=list)
 
 
 class HeartbeatRequest(BaseModel):
@@ -60,8 +70,10 @@ class ReleaseRequest(BaseModel):
 
 async def maint_loop() -> None:
     while True:
-        store.cleanup_dead(config.lease_timeout)
-        policy.try_promote_queue()
+        cleaned = store.cleanup_dead(config.lease_timeout)
+        promoted = policy.try_promote_queue()
+        if cleaned or promoted:
+            persist_state()
         await asyncio.sleep(1)
 
 
@@ -90,6 +102,7 @@ def register(req: RegisterRequest):
         cpu_capable=req.cpu_capable,
         ttl_seconds=req.ttl_seconds,
     ))
+    persist_state()
     return {"ok": True, "model": model.__dict__}
 
 
@@ -98,6 +111,7 @@ async def acquire(req: AcquireRequest):
     store.ensure_model(req.model_id, req.client_id, req.vram_mb, req.gpu_priority, req.cpu_capable, req.ttl_seconds)
     deadline = time.time() + max(0.0, req.wait_seconds)
     result = policy.acquire(req.model_id, req.client_id, req.worker_id, req.request_id)
+    persist_state()
     if result.status == "granted":
         return AcquireResponse(lease_id=result.lease.lease_id, status="granted", evicted=result.evicted)
     lease = result.lease
@@ -106,7 +120,9 @@ async def acquire(req: AcquireRequest):
         policy.try_promote_queue()
         current = store.leases.get(lease.lease_id)
         if current and current.status == "active":
+            persist_state()
             return AcquireResponse(lease_id=lease.lease_id, status="granted", evicted=result.evicted)
+    persist_state()
     return AcquireResponse(lease_id=lease.lease_id, status="queued", evicted=result.evicted)
 
 
@@ -121,26 +137,30 @@ def heartbeat(req: HeartbeatRequest):
             lease.last_vram_sample = req.vram_sample_mb
             store.add_sample(lease.model_id, req.vram_sample_mb)
         if lease.status == "evicting":
-            return HeartbeatResponse(status="evicted")
-        if lease.status in {"released", "dead"}:
-            return HeartbeatResponse(status=lease.status)
-        if lease.status == "queued":
-            return HeartbeatResponse(status="queued")
-        if req.state is not None:
-            lease.state = req.state
-        elif req.active:
-            lease.state = "inference_active"
+            response = HeartbeatResponse(status="evicted")
+        elif lease.status in {"released", "dead"}:
+            response = HeartbeatResponse(status=lease.status)
+        elif lease.status == "queued":
+            response = HeartbeatResponse(status="queued")
         else:
-            lease.state = "loaded_idle"
-        if req.active:
-            lease.last_active = time.time()
-        return HeartbeatResponse(status="active")
+            if req.state is not None:
+                lease.state = req.state
+            elif req.active:
+                lease.state = "inference_active"
+            else:
+                lease.state = "loaded_idle"
+            if req.active:
+                lease.last_active = time.time()
+            response = HeartbeatResponse(status="active")
+    persist_state()
+    return response
 
 
 @app.post("/v1/release")
 def release(req: ReleaseRequest):
     ok = store.release(req.lease_id)
     policy.try_promote_queue()
+    persist_state()
     return {"ok": ok}
 
 
@@ -148,6 +168,7 @@ def release(req: ReleaseRequest):
 def evict_ack(req: ReleaseRequest):
     ok = store.release(req.lease_id)
     policy.try_promote_queue()
+    persist_state()
     return {"ok": ok}
 
 
@@ -181,7 +202,11 @@ def status():
 
 @app.get("/v1/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "state_persistence": bool(config.state_path),
+        "state_loaded": state_loaded,
+    }
 
 
 def main() -> None:
