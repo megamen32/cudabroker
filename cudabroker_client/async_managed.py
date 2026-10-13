@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import logging
 import time
+from contextlib import asynccontextmanager
 from typing import Awaitable, Callable, Generic, TypeVar
 
 from .config import ClientConfig
@@ -13,6 +15,7 @@ from .sampler import memory_allocated_mb
 T = TypeVar("T")
 MaybeAwaitable = T | Awaitable[T]
 log = logging.getLogger(__name__)
+LOST_LEASE_STATUSES = {"evicted", "unknown", "dead", "released"}
 
 
 async def _maybe_await(value: MaybeAwaitable[T]) -> T:
@@ -45,6 +48,7 @@ class AsyncManagedModel(Generic[T]):
         self._task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
         self._active_until = 0.0
+        self._active_count = 0
 
     async def __aenter__(self) -> T:
         return await self.acquire()
@@ -66,6 +70,18 @@ class AsyncManagedModel(Generic[T]):
                 worker_id=self.worker_id,
             )
             self.lease = await self._cm.__aenter__()
+            if self.lease.local_mode:
+                cm = self._cm
+                self.lease = None
+                self._cm = None
+                await cm.__aexit__(None, None, None)
+                if self.cpu_fallback is None:
+                    raise RuntimeError(
+                        f"cudabroker unavailable; unmanaged GPU load refused for {self.model_id}"
+                    )
+                self.model = await _maybe_await(self.cpu_fallback())
+                self.current_device = "cpu"
+                return self.model
             await self.lease.touch(active=False, state="loading")
             before = memory_allocated_mb()
             self.model = await _maybe_await(self.loader())
@@ -95,11 +111,14 @@ class AsyncManagedModel(Generic[T]):
             except asyncio.TimeoutError:
                 pass
             try:
-                now = time.time()
-                active = now < self._active_until
-                state = "inference_active" if active else "loaded_idle"
-                status = await self.touch(active=active, state=state)
-                if status == "evicted":
+                async with self._lock:
+                    if not self.lease:
+                        return
+                    active = self._active_count > 0 or time.time() < self._active_until
+                    state = "inference_active" if active else "loaded_idle"
+                    status = await self.lease.touch(active=active, state=state)
+                if status in LOST_LEASE_STATUSES:
+                    await self._evict_to_cpu()
                     return
             except asyncio.CancelledError:
                 raise
@@ -122,9 +141,56 @@ class AsyncManagedModel(Generic[T]):
     async def touch(self, active: bool = True, vram_sample_mb: float | None = None, state: str | None = None) -> str:
         async with self._lock:
             status = await self._touch_locked(active=active, vram_sample_mb=vram_sample_mb, state=state)
-        if status == "evicted":
+        if status in LOST_LEASE_STATUSES:
             await self._evict_to_cpu()
         return status
+
+    async def begin_inference(self) -> T:
+        lost_status: str | None = None
+        async with self._lock:
+            if self.model is None:
+                raise RuntimeError(f"model {self.model_id} is not loaded")
+            if self.current_device == "cpu":
+                return self.model
+            if self.current_device != "cuda" or not self.lease:
+                raise RuntimeError(f"model {self.model_id} has no active GPU lease")
+            status = await self.lease.touch(active=True, state="inference_active")
+            if status in LOST_LEASE_STATUSES:
+                lost_status = status
+            else:
+                self._active_count += 1
+                return self.model
+
+        assert lost_status is not None
+        await self._evict_to_cpu()
+        async with self._lock:
+            if self.current_device == "cpu" and self.model is not None:
+                return self.model
+        raise RuntimeError(f"GPU lease lost for {self.model_id}: {lost_status}")
+
+    async def end_inference(self) -> None:
+        lost_status: str | None = None
+        async with self._lock:
+            if self._active_count > 0:
+                self._active_count -= 1
+            if self._active_count > 0:
+                return
+            self._active_until = 0.0
+            if not self.lease:
+                return
+            status = await self.lease.touch(active=False, state="loaded_idle")
+            if status in LOST_LEASE_STATUSES:
+                lost_status = status
+        if lost_status is not None:
+            await self._evict_to_cpu()
+
+    @asynccontextmanager
+    async def inference(self):
+        model = await self.begin_inference()
+        try:
+            yield model
+        finally:
+            await self.end_inference()
 
     async def _evict_to_cpu(self) -> None:
         async with self._lock:
@@ -132,11 +198,15 @@ class AsyncManagedModel(Generic[T]):
                 return
             self.model = None
             self.current_device = "evicted"
+            self._active_count = 0
+            self._active_until = 0.0
             lease = self.lease
             cm = self._cm
             self.lease = None
             self._cm = None
 
+        # The VRAM release must happen before evict_ack permits queued work.
+        self._empty_cuda_cache()
         if lease:
             await lease.evict_ack()
         if cm:
@@ -144,8 +214,6 @@ class AsyncManagedModel(Generic[T]):
                 await cm.__aexit__(None, None, None)
             except Exception:
                 pass
-        self._empty_cuda_cache()
-
         if self.cpu_fallback:
             model = await _maybe_await(self.cpu_fallback())
             async with self._lock:
@@ -165,12 +233,15 @@ class AsyncManagedModel(Generic[T]):
                     pass
             self.model = None
             self.current_device = "unloaded"
+            self._active_count = 0
+            self._active_until = 0.0
             lease = self.lease
             cm = self._cm
             self.lease = None
             self._cm = None
             self._task = None
 
+        self._empty_cuda_cache()
         if lease:
             await lease.release()
         if cm:
@@ -180,10 +251,12 @@ class AsyncManagedModel(Generic[T]):
                 await asyncio.wait_for(task, timeout=2.0)
             except (asyncio.TimeoutError, asyncio.CancelledError):
                 task.cancel()
-        self._empty_cuda_cache()
 
     @staticmethod
     def _empty_cuda_cache() -> None:
+        # Native CUDA runtimes may free VRAM only when their model object's
+        # finalizer runs.  Collect before clearing PyTorch's allocator cache.
+        gc.collect()
         try:
             import torch  # type: ignore
             if torch.cuda.is_available():

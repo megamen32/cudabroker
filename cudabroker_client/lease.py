@@ -28,8 +28,10 @@ class LeaseHandle:
             "vram_sample_mb": vram_sample_mb,
         })
         if resp.local_mode:
-            self.local_mode = True
-            return "active"
+            # A lease that was granted by the broker must retain its identity
+            # across a short broker restart. Converting it permanently to local
+            # mode would stop heartbeats and strand an unmanaged GPU model.
+            return "unavailable"
         status = resp.data.get("status", "unknown")
         if status == "evicted":
             self.evicted = True
@@ -61,8 +63,7 @@ class AsyncLeaseHandle:
             "vram_sample_mb": vram_sample_mb,
         })
         if resp.local_mode:
-            self.local_mode = True
-            return "active"
+            return "unavailable"
         status = resp.data.get("status", "unknown")
         if status == "evicted":
             self.evicted = True

@@ -10,8 +10,8 @@ def test_managed_model_local_mode(monkeypatch):
     monkeypatch.setattr("cudabroker_client.transport.BrokerTransport.post", fake_post)
     monkeypatch.delenv("CUDABROKER_REQUIRED", raising=False)
     mm = ManagedModel("m", loader=lambda: {"gpu": True}, cpu_fallback=lambda: {"cpu": True})
-    assert mm.acquire() == {"gpu": True}
-    assert mm.current_device == "cuda"
+    assert mm.acquire() == {"cpu": True}
+    assert mm.current_device == "cpu"
     mm.release()
     assert mm.current_device == "unloaded"
 
@@ -50,8 +50,8 @@ def test_managed_model_context_manager_releases(monkeypatch):
     monkeypatch.setattr("cudabroker_client.transport.BrokerTransport.post", fake_post)
     monkeypatch.delenv("CUDABROKER_REQUIRED", raising=False)
 
-    mm = ManagedModel("m", loader=lambda: "gpu")
+    mm = ManagedModel("m", loader=lambda: "gpu", cpu_fallback=lambda: "cpu")
     with mm as model:
-        assert model == "gpu"
-        assert mm.current_device == "cuda"
+        assert model == "cpu"
+        assert mm.current_device == "cpu"
     assert mm.current_device == "unloaded"

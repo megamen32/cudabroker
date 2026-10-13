@@ -29,8 +29,8 @@ async def test_async_managed_model_local_mode(monkeypatch):
     monkeypatch.delenv("CUDABROKER_REQUIRED", raising=False)
 
     mm = AsyncManagedModel("m", loader=loader, cpu_fallback=lambda: {"cpu": True})
-    assert await mm.acquire() == {"gpu": True}
-    assert mm.current_device == "cuda"
+    assert await mm.acquire() == {"cpu": True}
+    assert mm.current_device == "cpu"
     await mm.release()
     assert mm.current_device == "unloaded"
 
@@ -63,8 +63,8 @@ async def test_async_managed_model_context_manager_releases(monkeypatch):
     monkeypatch.setattr("cudabroker_client.transport.AsyncBrokerTransport.post", fake_post)
     monkeypatch.delenv("CUDABROKER_REQUIRED", raising=False)
 
-    mm = AsyncManagedModel("m", loader=lambda: "gpu")
+    mm = AsyncManagedModel("m", loader=lambda: "gpu", cpu_fallback=lambda: "cpu")
     async with mm as model:
-        assert model == "gpu"
-        assert mm.current_device == "cuda"
+        assert model == "cpu"
+        assert mm.current_device == "cpu"
     assert mm.current_device == "unloaded"
