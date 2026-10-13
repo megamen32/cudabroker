@@ -15,3 +15,13 @@ Observed initial five-check reproduction0.16s, whole unit0.988s. Purpose,
 category and timing are recorded in tests/test_managed_idle.py. Installation
 into the WhisperServer venv changes only its consumer dependency, not the
 running broker, foreign models, or other project environments.
+
+Post-install consumer: WhisperServer deployed2e64328 with the pinned0.2.1
+client.13 SDK checks passed in0.14s; five previously failing lifecycle checks
+now pass. Fresh public API observer captured Community-1 inference_active and
+its release; two actual CUDA load/unload cycles left zero model bytes above
+an unchanged8.125MiB process workspace. Full63-check Whisper release plus
+restart and public API canary took57.89s. Private user recordings were also
+processed by the same worker on CUDA. Evidence belongs to WhisperServer:
+.tmp/diarization-practice-20261013/gpu-api-accepted.json and gpu-canary.json.
+No broker server deployment or foreign model restart was needed for this fix.
