@@ -204,3 +204,10 @@ RestartSec=3
 [Install]
 WantedBy=multi-user.target
 ```
+
+
+### Admission fairness and idle residency
+
+CUDA broker leases protect model residency; they do not preempt an inference already in progress. New requests join an existing queue instead of bypassing it. Promotion scans the queue for the oldest request that fits current VRAM, so a temporarily oversized head does not block every smaller request. After three bypasses, a feasible oldest request becomes the next admission target while current inferences drain. This is best-effort fairness: a hard service deadline still requires a bound on active inference duration and load/unload acknowledgement time.
+
+When VRAM is short, the broker marks only one idle model for eviction and waits for its worker to unload and acknowledge before reconsidering capacity. GPU residency eviction does not depend on whether that model has CPU fallback. Queued lease retries refresh their heartbeat and retain their request ID/position. CPU fallback remains a client policy; for example, Qwen embeddings can use its CPU-only Ollama when the broker does not grant GPU immediately.

@@ -47,6 +47,7 @@ class Lease:
     last_heartbeat: float = field(default_factory=time.time)
     last_active: float = field(default_factory=time.time)
     last_vram_sample: float | None = None
+    queue_skips: int = 0
 
 
 @dataclass

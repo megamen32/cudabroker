@@ -86,3 +86,74 @@ def test_acquire_idempotent_for_same_request_id():
     assert r2.status == "queued"
     assert r1.lease.lease_id == r2.lease.lease_id
     assert len(s.queued_leases()) == 1
+
+
+def test_queue_skips_non_fitting_head_but_bounds_bypasses():
+    """Purpose: prove queued admission is work-conserving but anti-starvation. Detects unbounded small-request bypass. Category: fast unit. Expected <1 s; maximum 2 s."""
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=5000)
+    for name, size in (("resident", 3500), ("large", 3000), ("small", 1000)):
+        s.register(ModelInfo(name, "c", declared_vram_mb=size))
+    p.acquire("resident", "c")
+    resident = s.active_leases()[0]
+    resident.state = "inference_active"
+    head = p.acquire("large", "c", request_id="head").lease
+    for i in range(3):
+        later = p.acquire("small", "c", request_id=f"later-{i}")
+        if i < 2:
+            assert later.status == "active"
+            s.release(later.lease.lease_id)
+        else:
+            assert later.status == "queued"
+    p.try_promote_queue()
+    assert head.status == "queued"
+    assert resident.status == "active"
+    assert head.queue_skips >= 3
+
+
+def test_queue_promotes_oldest_admissible_not_head_of_line_blocked():
+    """Purpose: promote the oldest request that fits. Detects FIFO head-of-line blocking. Category: fast unit. Expected <1 s; maximum 2 s."""
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=5000)
+    s.register(ModelInfo("resident", "c", declared_vram_mb=3000))
+    s.register(ModelInfo("large", "c", declared_vram_mb=2500))
+    s.register(ModelInfo("small", "c", declared_vram_mb=1000))
+    p.acquire("resident", "c")
+    resident = s.active_leases()[0]
+    resident.state = "inference_active"
+    large = p.acquire("large", "c", request_id="first").lease
+    small = p.acquire("small", "c", request_id="second").lease
+    p.try_promote_queue()
+    assert large.status == "queued"
+    assert small.status == "active"
+
+
+def test_eviction_marks_only_one_idle_non_cpu_capable_model():
+    """Purpose: free GPU residency incrementally. Detects CPU-only eviction filtering and unload overshoot. Category: fast unit. Expected <1 s; maximum 2 s."""
+    s, p = mk()
+    s.set_gpu(total_mb=5000, free_mb=5000)
+    s.register(ModelInfo("resident-a", "c", declared_vram_mb=2000, cpu_capable=False))
+    s.register(ModelInfo("resident-b", "c", declared_vram_mb=2000, cpu_capable=False))
+    s.register(ModelInfo("new", "c", declared_vram_mb=4000))
+    p.acquire("resident-a", "c")
+    p.acquire("resident-b", "c")
+    for lease in s.active_leases():
+        lease.state = "loaded_idle"
+    result = p.acquire("new", "c")
+    assert result.status == "queued"
+    assert len(result.evicted) == 1
+    assert len([l for l in s.leases.values() if l.status == "evicting"]) == 1
+
+
+def test_idempotent_waiter_acquire_refreshes_heartbeat():
+    """Purpose: retain a live waiter and its queue position. Detects queued lease expiry during idempotent acquire retries. Category: fast unit. Expected <1 s; maximum 2 s."""
+    s, p = mk(strict=True)
+    s.register(ModelInfo("a", "c", declared_vram_mb=1000))
+    s.register(ModelInfo("b", "c", declared_vram_mb=1000))
+    p.acquire("a", "c")
+    queued = p.acquire("b", "c", request_id="wait").lease
+    before = queued.last_heartbeat
+    time.sleep(0.001)
+    again = p.acquire("b", "c", request_id="wait").lease
+    assert again.lease_id == queued.lease_id
+    assert again.last_heartbeat > before
