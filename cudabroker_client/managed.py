@@ -49,6 +49,9 @@ class ManagedModel(Generic[T]):
     def acquire(self) -> T:
         with self._lock:
             if self.model is not None and self.current_device == "cuda":
+                status = self.touch(active=True)
+                if status in LOST_LEASE_STATUSES:
+                    raise RuntimeError(f"GPU lease lost before inference for {self.model_id}: {status}")
                 return self.model
             self._cm = gpu_lease(
                 self.model_id,
@@ -78,7 +81,12 @@ class ManagedModel(Generic[T]):
             after = memory_allocated_mb()
             sample = (after - before) if before is not None and after is not None and after >= before else self.vram_mb
             self.current_device = "cuda"
-            self.touch(active=False, vram_sample_mb=sample, state="loaded_idle")
+            # Keep the newly granted lease protected while the caller moves
+            # from acquire() into inference(). Otherwise another broker
+            # request can evict the just-loaded model in that handoff window.
+            status = self.touch(active=True, vram_sample_mb=sample)
+            if status in LOST_LEASE_STATUSES:
+                raise RuntimeError(f"GPU lease lost while loading {self.model_id}: {status}")
             self._start_heartbeat()
             return self.model
 

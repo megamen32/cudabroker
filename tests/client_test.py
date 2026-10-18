@@ -43,6 +43,22 @@ def test_managed_model_evict_to_cpu(monkeypatch):
     assert mm.model == "cpu"
     assert mm.current_device == "cpu"
 
+
+def test_managed_model_acquire_fails_if_lease_is_lost_during_load(monkeypatch):
+    def fake_post(self, path, payload):
+        if path == "/v1/acquire":
+            return TransportResponse(True, {"lease_id": "l1", "status": "granted"}, False)
+        if path == "/v1/heartbeat":
+            return TransportResponse(True, {"status": "evicted"}, False)
+        return TransportResponse(True, {"ok": True}, False)
+
+    monkeypatch.setattr("cudabroker_client.transport.BrokerTransport.post", fake_post)
+    mm = ManagedModel("m", loader=lambda: "gpu")
+    with pytest.raises(RuntimeError, match="GPU lease lost while loading m: evicted"):
+        mm.acquire()
+    assert mm.model is None
+    assert mm.current_device == "evicted"
+
 def test_managed_model_context_manager_releases(monkeypatch):
     def fake_post(self, path, payload):
         return TransportResponse(False, {}, True)

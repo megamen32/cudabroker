@@ -57,40 +57,57 @@ class AsyncManagedModel(Generic[T]):
         await self.release()
 
     async def acquire(self) -> T:
+        lost_status: str | None = None
+        lost_phase = "while loading"
         async with self._lock:
             if self.model is not None and self.current_device == "cuda":
-                return self.model
-            self._cm = gpu_lease_async(
-                self.model_id,
-                self.vram_mb,
-                self.gpu_priority,
-                self.cpu_capable,
-                self.ttl_seconds,
-                self.client_id,
-                worker_id=self.worker_id,
-            )
-            self.lease = await self._cm.__aenter__()
-            if self.lease.local_mode:
-                cm = self._cm
-                self.lease = None
-                self._cm = None
-                await cm.__aexit__(None, None, None)
-                if self.cpu_fallback is None:
-                    raise RuntimeError(
-                        f"cudabroker unavailable; unmanaged GPU load refused for {self.model_id}"
-                    )
-                self.model = await _maybe_await(self.cpu_fallback())
-                self.current_device = "cpu"
-                return self.model
-            await self.lease.touch(active=False, state="loading")
-            before = memory_allocated_mb()
-            self.model = await _maybe_await(self.loader())
-            after = memory_allocated_mb()
-            sample = (after - before) if before is not None and after is not None and after >= before else self.vram_mb
-            self.current_device = "cuda"
-            await self._touch_locked(active=False, vram_sample_mb=sample, state="loaded_idle")
-            self._start_heartbeat()
-            return self.model
+                lost_phase = "before inference"
+                status = await self._touch_locked(active=True)
+                if status in LOST_LEASE_STATUSES:
+                    lost_status = status
+                else:
+                    return self.model
+            else:
+                self._cm = gpu_lease_async(
+                    self.model_id,
+                    self.vram_mb,
+                    self.gpu_priority,
+                    self.cpu_capable,
+                    self.ttl_seconds,
+                    self.client_id,
+                    worker_id=self.worker_id,
+                )
+                self.lease = await self._cm.__aenter__()
+                if self.lease.local_mode:
+                    cm = self._cm
+                    self.lease = None
+                    self._cm = None
+                    await cm.__aexit__(None, None, None)
+                    if self.cpu_fallback is None:
+                        raise RuntimeError(
+                            f"cudabroker unavailable; unmanaged GPU load refused for {self.model_id}"
+                        )
+                    self.model = await _maybe_await(self.cpu_fallback())
+                    self.current_device = "cpu"
+                    return self.model
+                await self.lease.touch(active=False, state="loading")
+                before = memory_allocated_mb()
+                self.model = await _maybe_await(self.loader())
+                after = memory_allocated_mb()
+                sample = (after - before) if before is not None and after is not None and after >= before else self.vram_mb
+                self.current_device = "cuda"
+                # Protect the loaded model across the acquire()/inference() handoff.
+                status = await self._touch_locked(active=True, vram_sample_mb=sample)
+                if status in LOST_LEASE_STATUSES:
+                    lost_status = status
+                else:
+                    self._start_heartbeat()
+                    return self.model
+
+        if lost_status is not None:
+            await self._evict_to_cpu()
+            raise RuntimeError(f"GPU lease lost {lost_phase} {self.model_id}: {lost_status}")
+        raise RuntimeError(f"model {self.model_id} could not be acquired")
 
     def _start_heartbeat(self) -> None:
         if self._task and not self._task.done():

@@ -25,3 +25,13 @@ restart and public API canary took57.89s. Private user recordings were also
 processed by the same worker on CUDA. Evidence belongs to WhisperServer:
 .tmp/diarization-practice-20261013/gpu-api-accepted.json and gpu-canary.json.
 No broker server deployment or foreign model restart was needed for this fix.
+
+## Lease handoff after loading — 2026-10-18
+
+WhisperServer logs showed a granted Large V3 lease being marked evicted between
+`ManagedModel.acquire()` and `inference()`. The client cleared its model during
+that handoff, then returned `None`, which surfaced later as “model is not
+loaded”. Both sync and async clients now protect the handoff with an active
+lease and raise immediately if the broker has already revoked it. Focused
+regression and eviction lifecycle checks passed (4 checks, 0.10s). The broker
+server and unrelated GPU clients were not restarted or changed.
